@@ -9,9 +9,9 @@
 
     <title>FM Assets Dashboard</title>
 
-    <link rel="stylesheet" href="dashboard.css?v=client-audit-20261012-v1">
+    <link rel="stylesheet" href="dashboard.css?v=asset-tools-20261014-v1">
 <link rel="stylesheet" href="transaction-display.css?v=vehicle-reg-20261012-v1">
-    <link rel="stylesheet" href="app-ui-polish.css?v=ui-20261005-mobile-v5">
+    <link rel="stylesheet" href="app-ui-polish.css?v=asset-tools-20261014-v1">
 </head>
 
 <body>
@@ -19,7 +19,7 @@
   <div class="connection-loading-card">
     <span class="loading-spinner" aria-hidden="true"></span>
     <strong id="connection-loading-title">Connecting to Google Sheets…</strong>
-    <span id="connection-loading-detail">Checking your saved Google connection.</span>
+    
   </div>
 </div>
 
@@ -79,6 +79,7 @@
     </button>
     <div id="quick-links" class="menu-links">
         <a href="index.html" class="active">Dashboard</a>
+<a href="asset-tools.html">Asset tools</a>
 <a href="movement-logger.html">Record movement</a>
 <a href="routine-outbounds.html">Routine outbounds</a>
 <a href="alerts.html">Alerts <span id="alerts-nav-badge" class="nav-alert-badge hidden">0</span></a>
@@ -133,10 +134,6 @@
         <div class="toolbar card">
 
             <div>
-
-                <div class="eyebrow">
-                    SOURCE
-                </div>
 
                 <div
                     id="workbook-name"
@@ -227,7 +224,7 @@
                     <span id="dashboard-data-version-status" class="filter-help-inline">Dashboard snapshot: live inventory ledger</span>
                 </label>
             </div>
-            <p class="filter-help">Client, day, asset and inventory-version filters affect the Dashboard inventory views only. Inbound and outbound panels are driven by your routine schedule.</p>
+            <p class="filter-help"></p>
         </section>
 
         <!-- WAREHOUSE ASSETS -->
@@ -264,7 +261,7 @@
                     </h2>
 
                     <p class="muted">
-                        Clients are taken from the Client List in the Assets Inventory Ledger.
+                        
                     </p>
 
                 </div>
@@ -436,7 +433,7 @@
                         <div>
                             <div class="eyebrow">BATCH MOVEMENTS</div>
                             <h3>Log multiple clients in one go</h3>
-                            <p class="muted">Each client entry can use its own movement and multiple asset types. Every line is still saved as a normal transaction.</p>
+                            <p class="muted">Add multiple clients and asset types in one submission.</p>
                         </div>
                         <button id="add-client-entry" class="secondary" type="button">+ Add another client</button>
                     </div>
@@ -460,7 +457,7 @@
                         <div id="photo-preview-wrap" class="photo-preview-wrap hidden">
                             <img id="photo-preview" alt="Selected movement photo preview">
                         </div>
-                        <p class="field-help">On Android/Chrome, use Take photo for the camera. The photo and comment are attached to every client entry in this batch.</p>
+                        <p class="field-help">On Android/Chrome, use Take photo for the camera. </p>
                     </div>
                     <label class="comment-field">Comment (optional)
                         <textarea id="movement-comment" rows="2" placeholder="Add any notes about this batch..."></textarea>
@@ -654,7 +651,7 @@
             <div>
                 <div class="eyebrow">CLIENT TOTALS</div>
                 <h2 id="client-ledger-export-title">Export client ledger</h2>
-                <p class="muted">Exports use the client report layout: newest date blocks are written at the top and older history stays underneath.</p>
+                
             </div>
             <button type="button" id="close-client-ledger-export" class="icon-button" aria-label="Close">×</button>
         </div>
@@ -714,7 +711,7 @@
                 <div>
                     <div class="eyebrow">MOVEMENT HISTORY</div>
                     <h3>Sent vs received</h3>
-                    <p class="muted">Daily quantities from the Asset Transactions ledger.</p>
+                    <p class="muted"></p>
                 </div>
             </div>
             <div id="warehouse-asset-movement-graph" class="asset-history-graph"></div>
@@ -725,7 +722,7 @@
                 <div>
                     <div class="eyebrow">STOCK HISTORY</div>
                     <h3>Quantity over time</h3>
-                    <p class="muted">Calculated closing quantity using the inventory balance as the anchor and the transaction ledger for historical changes.</p>
+                    <p class="muted"></p>
                 </div>
             </div>
             <div id="warehouse-asset-quantity-graph" class="asset-history-graph"></div>
@@ -784,9 +781,7 @@
                     Manage asset inventory
                 </h2>
 
-                <p class="muted">
-                    Add new asset types, rename assets or remove asset types.
-                </p>
+                <p class="muted">Update counts available to send and manage asset types.</p>
 
             </div>
 
@@ -842,10 +837,8 @@
         </div>
 
 
-        <p
-            id="inventory-manage-status"
-            class="status"
-        ></p>
+        <div class="availability-save-row"><button type="button" id="save-availability" class="secondary">Save availability counts</button></div>
+        <p id="inventory-manage-status" class="status" aria-live="polite"></p>
 
 
         <div class="table-wrap manage-table-wrap">
@@ -856,7 +849,8 @@
 
                     <tr>
                         <th>Asset type</th>
-                        <th class="num">Balance</th>
+                        <th class="num">Total</th>
+                        <th>Available to send today</th>
                         <th class="actions-column">Actions</th>
                     </tr>
 
@@ -890,11 +884,11 @@
       onload="window.dispatchEvent(new Event('fm-google-loaded'))"
     ></script>
 
-<script src="config.js?v=eod-ledger-20261003-merged"></script><script src="sheet-writer.js?v=sheet-writer-20261007-v1"></script>
+<script src="config.js?v=asset-tools-20261014-v1"></script><script src="sheet-writer.js?v=sheet-writer-20261007-v1"></script>
 <script src="movement-batch.js?v=multi-client-20261005"></script>
-<script src="transaction-display-utils.js?v=vehicle-reg-20261012-v1"></script>
-<script src="routine-alert-utils.js?v=eod-ledger-20261003-merged"></script>
-<script src="dashboard.js?v=client-audit-20261012-v1"></script>
+<script src="transaction-display-utils.js?v=asset-tools-20261014-v1"></script>
+<script src="routine-alert-utils.js?v=asset-tools-20261014-v1"></script>
+<script src="dashboard.js?v=asset-tools-20261014-v1"></script>
 
 </body>
 </html>

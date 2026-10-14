@@ -28,6 +28,9 @@
         inventory: [],
 
         transactions: [],
+        assetAvailability: [],
+        assetOperationRows: [],
+        clientAdjustmentRows: [],
 
         // The live inventory/transactions above remain the source for
         // movement recording and inventory management. Dashboard-only
@@ -301,6 +304,8 @@ $("client-details-summary")
                 "click",
                 openInventoryManager
             );
+
+        $("save-availability")?.addEventListener("click", saveAvailabilityCounts);
 
 
         $("close-inventory")
@@ -655,7 +660,10 @@ function bindQuickMenu() {
                 CONFIG.INVENTORY_SHEET_NAME,
                 CONFIG.TRANSACTIONS_SHEET_NAME,
                 CONFIG.ROUTINE_SHEET_NAME,
-                CONFIG.ALERTS_SHEET_NAME
+                CONFIG.ALERTS_SHEET_NAME,
+                CONFIG.ASSET_AVAILABILITY_SHEET_NAME,
+                CONFIG.ASSET_OPERATIONS_SHEET_NAME,
+                CONFIG.CLIENT_LEDGER_ADJUSTMENTS_SHEET_NAME
             ];
             const missingSheets = requiredSheets.filter(name => !sheetTitles.includes(name));
 
@@ -664,20 +672,29 @@ function bindQuickMenu() {
                 sheetTitles = sheetTitles.concat(missingSheets);
             }
 
-            const [inventoryRows, transactionRows, clientListRows, routineRows, alertRows] = await Promise.all([
+            const [inventoryRows, transactionRows, clientListRows, routineRows, alertRows, availabilityRows, operationRows, adjustmentRows] = await Promise.all([
                 getValues(ledgerId, CONFIG.INVENTORY_SHEET_NAME),
                 getValues(ledgerId, CONFIG.TRANSACTIONS_SHEET_NAME),
                 getValues(ledgerId, CONFIG.CLIENT_LIST_SHEET_NAME),
                 getValues(ledgerId, CONFIG.ROUTINE_SHEET_NAME),
-                getValues(ledgerId, CONFIG.ALERTS_SHEET_NAME)
+                getValues(ledgerId, CONFIG.ALERTS_SHEET_NAME),
+                getValues(ledgerId, CONFIG.ASSET_AVAILABILITY_SHEET_NAME),
+                getValues(ledgerId, CONFIG.ASSET_OPERATIONS_SHEET_NAME),
+                getValues(ledgerId, CONFIG.CLIENT_LEDGER_ADJUSTMENTS_SHEET_NAME)
             ]);
 
             await ensureTransactionColumns(ledgerId, transactionRows);
             await ensureOperationalSheetHeaders(ledgerId, CONFIG.ROUTINE_SHEET_NAME, routineRows, FM_ROUTINE_ALERTS.ROUTINE_HEADERS);
             await ensureOperationalSheetHeaders(ledgerId, CONFIG.ALERTS_SHEET_NAME, alertRows, FM_ROUTINE_ALERTS.ALERT_HEADERS);
+            await ensureOperationalSheetHeaders(ledgerId, CONFIG.ASSET_AVAILABILITY_SHEET_NAME, availabilityRows, ["Date", "Asset", "Available Count", "Updated By", "Updated At"]);
+            await ensureOperationalSheetHeaders(ledgerId, CONFIG.ASSET_OPERATIONS_SHEET_NAME, operationRows, ["Timestamp", "Client", "Movement", "Asset", "Quantity", "User", "Comment", "Image Link", "Inventory Balance", "Operation ID"]);
+            await ensureOperationalSheetHeaders(ledgerId, CONFIG.CLIENT_LEDGER_ADJUSTMENTS_SHEET_NAME, adjustmentRows, ["Timestamp", "Client", "Movement", "Asset", "Quantity", "User", "Comment", "Image Link", "Inventory Balance", "Target Balance", "Previous Balance", "Adjustment ID"]);
             state.alertHeaders = alertRows[0]?.slice() || FM_ROUTINE_ALERTS.ALERT_HEADERS.slice();
 
             state.inventory = parseInventory(inventoryRows);
+            state.assetAvailability = parseAvailability(availabilityRows);
+            state.assetOperationRows = operationRows;
+            state.clientAdjustmentRows = adjustmentRows;
             // Inventory Change Log is retired. Remove the old sheet once and
             // keep Asset Inventory as a plain Asset/Balance table.
             if (window.FM_SHEET_WRITER?.removeLegacyChangeLog) {
@@ -690,7 +707,11 @@ function bindQuickMenu() {
                     console.warn("Legacy Inventory Change Log could not be removed yet:", legacyError);
                 }
             }
-            state.transactions = parseTransactions(transactionRows);
+            state.transactions = [
+                ...parseTransactions(transactionRows),
+                ...parseTransactions(operationRows).filter(item => item.client || item.asset),
+                ...parseTransactions(adjustmentRows).filter(item => item.client || item.asset)
+            ];
             state.clientListRows = clientListRows.map(row => row.slice());
             state.clients = parseClients(clientListRows);
             state.routines = FM_ROUTINE_ALERTS.parseRoutineRows(routineRows);
@@ -844,9 +865,9 @@ function bindQuickMenu() {
         }
 
         if (state.dashboardSource?.kind === "historical") {
-            status.textContent = `Dashboard snapshot: ${state.dashboardSource.name}`;
+            status.textContent = `Historical snapshot: ${state.dashboardSource.name}`;
         } else {
-            status.textContent = "Dashboard snapshot: live inventory ledger";
+            status.textContent = "";
         }
     }
 
@@ -1003,7 +1024,15 @@ function bindQuickMenu() {
         if (names.includes(CONFIG.ALERTS_SHEET_NAME)) {
             await updateValues(ledgerId, CONFIG.ALERTS_SHEET_NAME, [FM_ROUTINE_ALERTS.ALERT_HEADERS]);
         }
-
+        if (names.includes(CONFIG.ASSET_AVAILABILITY_SHEET_NAME)) {
+            await updateValues(ledgerId, CONFIG.ASSET_AVAILABILITY_SHEET_NAME, [["Date", "Asset", "Available Count", "Updated By", "Updated At"]]);
+        }
+        if (names.includes(CONFIG.ASSET_OPERATIONS_SHEET_NAME)) {
+            await updateValues(ledgerId, CONFIG.ASSET_OPERATIONS_SHEET_NAME, [["Timestamp", "Client", "Movement", "Asset", "Quantity", "User", "Comment", "Image Link", "Inventory Balance", "Operation ID"]]);
+        }
+        if (names.includes(CONFIG.CLIENT_LEDGER_ADJUSTMENTS_SHEET_NAME)) {
+            await updateValues(ledgerId, CONFIG.CLIENT_LEDGER_ADJUSTMENTS_SHEET_NAME, [["Timestamp", "Client", "Movement", "Asset", "Quantity", "User", "Comment", "Image Link", "Inventory Balance", "Target Balance", "Previous Balance", "Adjustment ID"]]);
+        }
 
         if (
             names.includes(
@@ -1331,6 +1360,52 @@ function bindQuickMenu() {
         })).filter(item => item.asset || item.client);
     }
 
+    function normalizeSheetDateKey(value) {
+        const text = String(value ?? "").trim();
+        if (!text) return "";
+        const iso = text.match(/^(\d{4}-\d{2}-\d{2})/);
+        if (iso) return iso[1];
+        const dmy = text.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+        if (dmy) return `${dmy[3]}-${String(dmy[2]).padStart(2, "0")}-${String(dmy[1]).padStart(2, "0")}`;
+        const serial = Number(text);
+        if (Number.isFinite(serial) && serial > 20000 && serial < 80000) {
+            const date = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
+            return `${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,"0")}-${String(date.getUTCDate()).padStart(2,"0")}`;
+        }
+        return "";
+    }
+
+    function todayDateKey() {
+        const now = new Date();
+        return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+    }
+
+    function parseAvailability(rows) {
+        if (!Array.isArray(rows) || !rows.length) return [];
+        const header = rows[0].map(normalizeHeader);
+        const dateIdx = findColumn(header, ["date", "day"]);
+        const assetIdx = findColumn(header, ["asset", "asset type", "item"]);
+        const countIdx = findColumn(header, ["available count", "available", "available to send", "quantity"]);
+        const userIdx = findColumn(header, ["updated by", "user", "entered by"]);
+        const updatedIdx = findColumn(header, ["updated at", "timestamp", "last updated"]);
+        if (dateIdx < 0 || assetIdx < 0 || countIdx < 0) return [];
+        return rows.slice(1).map((row, index) => ({
+            rowNumber: index + 2,
+            date: normalizeSheetDateKey(row[dateIdx]),
+            asset: String(row[assetIdx] ?? "").trim(),
+            availableCount: row[countIdx] === "" || row[countIdx] == null ? null : numericValue(row[countIdx]),
+            updatedBy: String(row[userIdx] ?? "").trim(),
+            updatedAt: String(row[updatedIdx] ?? "").trim()
+        })).filter(item => item.date && item.asset && item.availableCount !== null && Number.isFinite(item.availableCount));
+    }
+
+    function getTodayAvailability(asset) {
+        const key = String(asset || "").trim().toLowerCase();
+        const today = todayDateKey();
+        const matches = (state.assetAvailability || []).filter(row => row.date === today && row.asset.toLowerCase() === key);
+        return matches.length ? matches[matches.length - 1].availableCount : null;
+    }
+
     async function ensureTransactionColumns(ledgerId, rows) {
         const header = rows.length
             ? rows[0].slice()
@@ -1632,7 +1707,8 @@ function bindQuickMenu() {
                     {
                         asset,
                         sent: 0,
-                        received: 0
+                        received: 0,
+                        normalisation: 0
                     }
                 );
             }
@@ -1655,6 +1731,9 @@ function bindQuickMenu() {
             if (movement === "RECEIVED") {
                 entry.received += quantity;
             }
+            if (movement === "NORMALISATION") {
+                entry.normalisation += quantity;
+            }
         });
 
         return [...map.values()]
@@ -1662,8 +1741,7 @@ function bindQuickMenu() {
                 item => ({
                     ...item,
                     net:
-                        item.sent -
-                        item.received
+                        item.sent - item.received + (item.normalisation || 0)
                 })
             )
             .sort(
@@ -2298,12 +2376,26 @@ function bindQuickMenu() {
 
     function closeClientLedgerExport() { $("client-ledger-export-modal")?.classList.add("hidden"); }
 
-    function clientLedgerDirection(movement) {
+    function clientLedgerDirection(movement, quantity) {
         const m = String(movement || "").trim().toUpperCase();
         if (["SENT","OUTBOUND","OUT","SEND"].includes(m)) return "Sent";
         if (["RECEIVED","INBOUND","IN","RECEIVE"].includes(m)) return "Received";
         if (["DISCARDED","DISCARD"].includes(m)) return "Discarded";
+        // In client-specific reports, represent a signed ledger correction on
+        // the sent/received side that produces the corrected running balance.
+        if (["NORMALISATION", "NORMALIZATION", "LEDGER ADJUSTMENT"].includes(m)) {
+            if (quantity === undefined || quantity === null || quantity === "") return "Adjustment";
+            return Number(quantity) >= 0 ? "Sent" : "Received";
+        }
         return movementLabel(movement) || String(movement || "Other");
+    }
+
+    function clientLedgerQuantity(item) {
+        const quantity = Number(item?.quantity) || 0;
+        const movement = String(item?.movement || "").trim().toUpperCase();
+        return ["NORMALISATION", "NORMALIZATION", "LEDGER ADJUSTMENT"].includes(movement)
+            ? Math.abs(quantity)
+            : quantity;
     }
 
     function exportDateTime(item) {
@@ -2323,8 +2415,8 @@ function bindQuickMenu() {
         const cumulative=new Map(), cumulativeByRow=new Map();
         for(const row of allSorted){
             const asset=String(row.item.asset||"Unknown asset").trim()||"Unknown asset";
-            const qty=Number(row.item.quantity)||0;
-            const direction=clientLedgerDirection(row.item.movement);
+            const qty=clientLedgerQuantity(row.item);
+            const direction=clientLedgerDirection(row.item.movement, row.item.quantity);
             const next=(cumulative.get(asset)||0)+(direction==="Sent"?qty:direction==="Received"?-qty:0);
             cumulative.set(asset,next); cumulativeByRow.set(row.item,next); row.asset=asset; row.allTimeDifference=next;
         }
@@ -2333,13 +2425,13 @@ function bindQuickMenu() {
         for(const row of inPeriod){
             const key=`${row.date}\u0000${row.asset}`;
             if(!daily.has(key))daily.set(key,{date:row.date,asset:row.asset,sent:0,received:0,difference:0,transactions:0,photoCount:0,allTimeDifference:row.allTimeDifference});
-            const d=daily.get(key),qty=Number(row.item.quantity)||0,direction=clientLedgerDirection(row.item.movement);
+            const d=daily.get(key),qty=clientLedgerQuantity(row.item),direction=clientLedgerDirection(row.item.movement, row.item.quantity);
             if(direction==="Sent"){d.sent+=qty;d.difference+=qty;}else if(direction==="Received"){d.received+=qty;d.difference-=qty;}
             d.transactions+=1;if(row.item.image)d.photoCount+=1;d.allTimeDifference=row.allTimeDifference;
         }
         const dailyRows=[...daily.values()].sort((a,b)=>b.date.localeCompare(a.date)||a.asset.localeCompare(b.asset));
         const transactions=[...inPeriod].sort((a,b)=>(new Date(b.item.timestamp).getTime()-new Date(a.item.timestamp).getTime())||(b.originalIndex-a.originalIndex));
-        const periodTotals=inPeriod.reduce((acc,row)=>{const qty=Number(row.item.quantity)||0,d=clientLedgerDirection(row.item.movement);if(d==="Sent")acc.sent+=qty;else if(d==="Received")acc.received+=qty;else if(d==="Discarded")acc.discarded+=qty;acc.transactions+=1;if(row.item.image)acc.photos+=1;return acc;},{sent:0,received:0,discarded:0,transactions:0,photos:0});
+        const periodTotals=inPeriod.reduce((acc,row)=>{const qty=clientLedgerQuantity(row.item),d=clientLedgerDirection(row.item.movement,row.item.quantity);if(d==="Sent")acc.sent+=qty;else if(d==="Received")acc.received+=qty;else if(d==="Discarded")acc.discarded+=qty;acc.transactions+=1;if(row.item.image)acc.photos+=1;return acc;},{sent:0,received:0,discarded:0,transactions:0,photos:0});
         periodTotals.difference=periodTotals.sent-periodTotals.received;
         const assets=[...cumulative.entries()].filter(([asset])=>!wantedSet.size||wantedSet.has(String(asset).toLowerCase())).sort((a,b)=>a[0].localeCompare(b[0])).map(([asset,balance])=>({asset,balance}));
         return{transactions,dailyRows,periodTotals,assets};
@@ -2727,8 +2819,8 @@ function bindQuickMenu() {
         const received = new Map(), sent = new Map();
         rows.forEach(row => {
             const asset = row.asset;
-            const qty = Number(row.item.quantity) || 0;
-            const direction = clientLedgerDirection(row.item.movement);
+            const qty = clientLedgerQuantity(row.item);
+            const direction = clientLedgerDirection(row.item.movement, row.item.quantity);
             if (direction === "Received") received.set(asset, (received.get(asset) || 0) + qty);
             else if (direction === "Sent") sent.set(asset, (sent.get(asset) || 0) + qty);
         });
@@ -2750,8 +2842,8 @@ function bindQuickMenu() {
             for (let i = group.startIndex; i < group.endIndex; i += 1) groupByRow.set(i, group);
         });
         dateGroup.rows.forEach((row, index) => {
-            const direction = clientLedgerDirection(row.item.movement);
-            const qty = Number(row.item.quantity) || 0;
+            const direction = clientLedgerDirection(row.item.movement, row.item.quantity);
+            const qty = clientLedgerQuantity(row.item);
             const group = groupByRow.get(index);
             const isGroupStart = group?.startIndex === index;
             rows.push([
@@ -3129,8 +3221,8 @@ function bindQuickMenu() {
                         : `<a href="${escapeAttr(group.image)}" target="_blank" rel="noopener">Open photo</a>`)
                     : "";
                 return group.rows.map((row, rowIndex) => {
-                    const direction = clientLedgerDirection(row.item.movement);
-                    const qty = Number(row.item.quantity) || 0;
+                    const direction = clientLedgerDirection(row.item.movement, row.item.quantity);
+                    const qty = clientLedgerQuantity(row.item);
                     const merged = rowIndex === 0
                         ? `<td rowspan="${count}">${escapeHtml(client)}</td><td rowspan="${count}">${escapeHtml(row.date)}</td><td rowspan="${count}">${escapeHtml(row.time)}</td>`
                         : "";
@@ -3201,8 +3293,8 @@ function bindQuickMenu() {
                 const photo = photoData.get(group.image);
                 const canEmbed = Boolean(includePhotos && group.image && photo?.dataUrl && ["jpeg", "png"].includes(String(photo.extension || "").toLowerCase()));
                 const span = value => group.count > 1 ? {content:value, rowSpan:group.count, styles:{valign:"middle"}} : value;
-                const firstQty = Number(first.item.quantity) || 0;
-                const firstDirection = clientLedgerDirection(first.item.movement);
+                const firstQty = clientLedgerQuantity(first.item);
+                const firstDirection = clientLedgerDirection(first.item.movement, first.item.quantity);
                 body.push([
                     span(client), span(first.date), span(first.time), first.asset,
                     firstDirection === "Sent" ? formatNumber(firstQty) : "0",
@@ -3213,8 +3305,8 @@ function bindQuickMenu() {
                 if (includePhotos && group.image) photoByBodyRow.set(firstBodyRow, {url:group.image, image:photo, canEmbed});
                 for (let index = 1; index < group.rows.length; index += 1) {
                     const row = group.rows[index];
-                    const direction = clientLedgerDirection(row.item.movement);
-                    const qty = Number(row.item.quantity) || 0;
+                    const direction = clientLedgerDirection(row.item.movement, row.item.quantity);
+                    const qty = clientLedgerQuantity(row.item);
                     // AutoTable supports ragged rows when earlier cells use rowSpan.
                     body.push([row.asset, direction === "Sent" ? formatNumber(qty) : "0", direction === "Received" ? formatNumber(qty) : "0"]);
                 }
@@ -3452,7 +3544,7 @@ function bindQuickMenu() {
             for (let index=0; index<dateGroup.rows.length; index+=1) {
                 const row=dateGroup.rows[index];
                 const group=timestampGroupByRow.get(index),isGroupStart=group?.startIndex===index;
-                const direction=clientLedgerDirection(row.item.movement),qty=Number(row.item.quantity)||0;
+                const direction=clientLedgerDirection(row.item.movement,row.item.quantity),qty=clientLedgerQuantity(row.item);
                 const photoUrl=isGroupStart?group.image:"";
                 const photoCell=photoUrl?{text:"Open photo",hyperlink:photoUrl}:"";
                 const r=ledger.addRow([index===0?client:"",index===0?row.date:"",isGroupStart?row.time:"",row.asset,direction==="Sent"?qty:0,direction==="Received"?qty:0,isGroupStart?group.comment:"",photoCell]);
@@ -3563,16 +3655,8 @@ function bindQuickMenu() {
          document.querySelector("#outbound-body")?.closest(".load-section")]
             .filter(Boolean)
             .forEach(section => {
-                let el = section.querySelector(".filter-note");
-                if (!el) {
-                    el = document.createElement("p");
-                    el.className = "muted filter-note";
-                    section.appendChild(el);
-                }
-                el.textContent = !dateOk && filters.date
-                    ? "Routine movements are displayed for today. Clear the Day filter to return to today's routine schedule."
-                    : "Routine schedule · no external tracker data is used.";
-                el.classList.remove("hidden");
+                const el = section.querySelector(".filter-note");
+                if (el) el.remove();
             });
     }
 
@@ -3616,7 +3700,7 @@ function bindQuickMenu() {
         }).join("");
         return `<article class="transaction-card ${cardClass}">
             <div class="transaction-card-head">
-                <div class="transaction-card-client"><img class="transaction-truck-icon" src="truck-icon.png" alt=""><div class="transaction-card-client-copy"><div class="eyebrow">CLIENT MOVEMENT</div><h3>${escapeHtml(group.client)}</h3></div></div>
+                <div class="transaction-card-client"><img class="transaction-truck-icon" src="truck-icon.png" alt=""><div class="transaction-card-client-copy"><div class="eyebrow">${movementNames.includes("NORMALISATION") ? "CLIENT LEDGER ADJUSTMENT" : String(group.client).trim().toLowerCase() === "warehouse" ? "ASSET OPERATION" : "CLIENT MOVEMENT"}</div><h3>${escapeHtml(group.client)}</h3></div></div>
                 <time class="transaction-card-time">${escapeHtml(formatTimestamp(group.timestamp))}</time>
             </div>
             <div class="transaction-card-meta"><span class="transaction-card-line-count">${group.totalLines} ledger line${group.totalLines === 1 ? "" : "s"}</span>${group.vehicleReg ? `<span class="transaction-vehicle-reg"><span>Vehicle reg</span><strong>${escapeHtml(group.vehicleReg)}</strong></span>` : ""}${attachment ? `<span class="transaction-attachment-mark">${attachment}</span>` : ""}</div>
@@ -3865,10 +3949,7 @@ function bindQuickMenu() {
                         ];
 
 
-                    if (
-                        movement ===
-                        "RECEIVED"
-                    ) {
+                    if (["RECEIVED", "COMBINE_IN"].includes(movement)) {
 
                         entry.net +=
                             quantity;
@@ -3879,10 +3960,7 @@ function bindQuickMenu() {
                     }
 
 
-                    if (
-                        movement ===
-                        "SENT"
-                    ) {
+                    if (["SENT", "COMBINE_OUT"].includes(movement)) {
 
                         entry.net -=
                             quantity;
@@ -3940,8 +4018,8 @@ function bindQuickMenu() {
                 .reduce((total, t) => {
                     const movement = String(t.movement || "").trim().toUpperCase();
                     const qty = Number(t.quantity) || 0;
-                    return movement === "RECEIVED" ? total + qty :
-                        ["SENT","DISCARD"].includes(movement) ? total - qty : total;
+                    return ["RECEIVED", "COMBINE_IN"].includes(movement) ? total + qty :
+                        ["SENT", "DISCARD", "COMBINE_OUT"].includes(movement) ? total - qty : total;
                 }, 0);
 
             const indicator = isHistoricalSnapshot && !hasExplicitDay
@@ -3967,7 +4045,10 @@ function bindQuickMenu() {
                     <div class="warehouse-asset-name">${escapeHtml(assetName)}</div>
                     ${verifiedBadge}
                 </div>
-                <div class="warehouse-asset-count">${formatNumber(item.balance)}</div>
+                <div class="warehouse-asset-total"><div class="warehouse-asset-count">${formatNumber(item.balance)}</div><span>Total</span></div>
+                ${(!isHistoricalSnapshot && (!filters.date || filters.date === todayDateKey()) && getTodayAvailability(assetName) !== null)
+                    ? `<div class="warehouse-asset-available"><strong>${formatNumber(Math.min(getTodayAvailability(assetName), item.balance))}</strong><span>available to send</span></div>`
+                    : ""}
                 <div class="warehouse-asset-movement">
                     ${indicator}
                     <span class="movement-label">${filters.date ? formatGraphDate(activeDate) : (state.dashboardSource?.kind === "historical" ? "snapshot" : "today")}</span>
@@ -3995,7 +4076,7 @@ function bindQuickMenu() {
         return getDashboardTransactions().filter(item => {
             if (String(item.asset || "").trim().toLowerCase() !== wantedAsset) return false;
             if (filters.client && String(item.client || "").trim() !== filters.client) return false;
-            return ["SENT", "RECEIVED", "DISCARD"].includes(String(item.movement || "").trim().toUpperCase()) && transactionDateKey(item.timestamp);
+            return ["SENT", "RECEIVED", "DISCARD", "COMBINE_OUT", "COMBINE_IN"].includes(String(item.movement || "").trim().toUpperCase()) && transactionDateKey(item.timestamp);
         });
     }
 
@@ -4068,8 +4149,8 @@ function bindQuickMenu() {
             const entry = daily.get(date);
             const movement = String(item.movement || "").trim().toUpperCase();
             const quantity = Number(item.quantity) || 0;
-            if (movement === "SENT") entry.sent += quantity;
-            else if (movement === "RECEIVED") entry.received += quantity;
+            if (movement === "SENT" || movement === "COMBINE_OUT") entry.sent += quantity;
+            else if (movement === "RECEIVED" || movement === "COMBINE_IN") entry.received += quantity;
             else if (movement === "DISCARD") entry.discarded += quantity;
         });
         return [...daily.entries()].sort((a, b) => a[0].localeCompare(b[0]));
@@ -4164,7 +4245,7 @@ function bindQuickMenu() {
             ${grid}<line x1="${left}" y1="${top+chartHeight}" x2="${width-right}" y2="${top+chartHeight}" class="graph-axis"></line>
             <path d="${path}" class="graph-line graph-line-quantity" fill="none"></path>
             ${pointMarkup}${labels}</svg></div>
-        <div class="asset-history-calculation-note">Calculated from the inventory balance and the recorded transaction ledger. It assumes the ledger contains the complete movement history for this asset.</div>`;
+`;
         bindGraphTooltips(graph.querySelector(".client-graph-svg"));
     }
 
@@ -4807,6 +4888,12 @@ function bindQuickMenu() {
                 return 'Sent';
             case 'DISCARD':
                 return 'Discard';
+            case 'COMBINE_OUT':
+                return 'Combination component used';
+            case 'COMBINE_IN':
+                return 'Combined asset created';
+            case 'NORMALISATION':
+                return 'Client ledger normalisation';
             default:
                 return String(value || '');
         }
@@ -5252,17 +5339,14 @@ function bindQuickMenu() {
 
                             </td>
 
-                            <td class="num">
-
-                                ${formatNumber(
-                                    item.balance
-                                )}
-
+                            <td class="num">${formatNumber(item.balance)}</td>
+                            <td>
+                                <input class="availability-count-input" type="number" min="0" step="1"
+                                    data-availability-asset="${escapeAttr(item.asset)}"
+                                    value="${getTodayAvailability(item.asset) === null ? "" : Math.min(getTodayAvailability(item.asset), item.balance)}"
+                                    placeholder="—" aria-label="Available ${escapeAttr(item.asset)} to send today">
                             </td>
-
-                            <td
-                                class="actions-cell"
-                            >
+                            <td class="actions-cell">
 
                                 <button
                                     class="table-action"
@@ -5288,13 +5372,67 @@ function bindQuickMenu() {
                     `
                 ).join("")
 
-                : emptyRow(
-                    3,
-                    "No asset types configured."
-                );
+                : emptyRow(4, "No asset types configured.");
 
     }
 
+
+    async function saveAvailabilityCounts() {
+        if (!state.accessToken) return;
+        const inputs = [...document.querySelectorAll("[data-availability-asset]")];
+        const entries = [];
+        for (const input of inputs) {
+            const asset = String(input.dataset.availabilityAsset || "").trim();
+            const raw = String(input.value ?? "").trim();
+            if (!asset) continue;
+            if (!raw) { entries.push({asset, count: null}); continue; }
+            const count = Number(raw);
+            const item = state.inventory.find(row => row.asset.toLowerCase() === asset.toLowerCase());
+            if (!Number.isInteger(count) || count < 0) { setInventoryManageStatus(`Enter a whole number of zero or more for ${asset}, or leave it blank.`, true); input.focus(); return; }
+            if (item && count > item.balance) { setInventoryManageStatus(`${asset}: available to send cannot exceed the total stock (${formatNumber(item.balance)}).`, true); input.focus(); return; }
+            entries.push({asset, count});
+        }
+        try {
+            setInventoryManageStatus("Saving availability counts…");
+            const ledgerId = CONFIG.INVENTORY_LEDGER_SHEET_ID;
+            const rows = await getValues(ledgerId, CONFIG.ASSET_AVAILABILITY_SHEET_NAME);
+            const existing = parseAvailability(rows);
+            const date = todayDateKey();
+            const user = state.idTokenPayload?.email || readSavedSession()?.email || "";
+            const timestamp = new Date().toISOString();
+            const header = rows[0] || ["Date", "Asset", "Available Count", "Updated By", "Updated At"];
+            const normalized = header.map(normalizeHeader);
+            const dateIdx = Math.max(0, normalized.indexOf("date"));
+            const assetIdx = Math.max(0, normalized.indexOf("asset"));
+            const byIdx = Math.max(0, normalized.indexOf("updated by"));
+            const atIdx = Math.max(0, normalized.indexOf("updated at"));
+            const countIdx = Math.max(0, normalized.indexOf("available count"));
+            const updates = [];
+            const clears = [];
+            let nextRow = Math.max(rows.length, 1) + 1;
+            for (const entry of entries) {
+                const old = existing.filter(row => row.date === date && row.asset.toLowerCase() === entry.asset.toLowerCase()).slice(-1)[0];
+                if (entry.count === null) {
+                    if (old) clears.push(`'${CONFIG.ASSET_AVAILABILITY_SHEET_NAME}'!A${old.rowNumber}:E${old.rowNumber}`);
+                    continue;
+                }
+                let rowNumber = old?.rowNumber || nextRow++;
+                const values = new Array(Math.max(header.length, 5)).fill("");
+                values[dateIdx] = date; values[assetIdx] = entry.asset; values[countIdx] = entry.count; values[byIdx] = user; values[atIdx] = timestamp;
+                updates.push({range: `'${CONFIG.ASSET_AVAILABILITY_SHEET_NAME}'!A${rowNumber}:${columnLetter(values.length)}${rowNumber}`, majorDimension: "ROWS", values: [values]});
+            }
+            if (updates.length) await sheetsPost(`/${encodeURIComponent(ledgerId)}/values:batchUpdate`, {valueInputOption: "USER_ENTERED", data: updates});
+            for (const range of clears) await sheetsPost(`/${encodeURIComponent(ledgerId)}/values/${encodeURIComponent(range)}:clear`, {});
+            const refreshed = await getValues(ledgerId, CONFIG.ASSET_AVAILABILITY_SHEET_NAME);
+            state.assetAvailability = parseAvailability(refreshed);
+            renderInventoryManager();
+            renderWarehouseAssets();
+            setInventoryManageStatus("Availability counts saved.");
+        } catch (error) {
+            console.error(error);
+            setInventoryManageStatus(error.message || "Could not save availability counts.", true);
+        }
+    }
 
     function handleMovementChange() {
         batchForm?.refresh?.();

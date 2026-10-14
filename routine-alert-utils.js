@@ -148,14 +148,15 @@
       const asset = String(item.asset || "").trim();
       if (!client || !asset || /hsc london \(self\)/i.test(client)) return;
       const key = `${normalize(client)}||${normalize(asset)}`;
-      if (!map.has(key)) map.set(key, { client, asset, sent: 0, received: 0 });
+      if (!map.has(key)) map.set(key, { client, asset, sent: 0, received: 0, normalisation: 0 });
       const entry = map.get(key);
       const qty = number(item.quantity);
       const movement = normalize(item.movement).toUpperCase();
       if (movement === "SENT") entry.sent += qty;
       if (movement === "RECEIVED") entry.received += qty;
+      if (movement === "NORMALISATION" || movement === "NORMALIZATION") entry.normalisation += qty;
     });
-    return [...map.values()].map(item => ({ ...item, net: item.sent - item.received }));
+    return [...map.values()].map(item => ({ ...item, net: item.sent - item.received + item.normalisation }));
   }
 
   function buildAlertCandidates({ inventory = [], transactions = [], routines = [], clients = [], date = new Date() }) {

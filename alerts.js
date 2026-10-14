@@ -4,7 +4,7 @@
   const SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets";
   const SESSION_KEY = "fmAssetSession";
   const state = {
-    accessToken: null, idTokenPayload: null, alerts: [], inventory: [], transactions: [], routines: [], clients: [],
+    accessToken: null, idTokenPayload: null, alerts: [], inventory: [], transactions: [], auditTransactions: [], routines: [], clients: [],
     alertHeaders: [], alertFilter: "OPEN", search: "", attending: null, investigationAlert: null, investigationRows: []
   };
   let tokenRequestPromise = null;
@@ -120,12 +120,19 @@
       const titles=(meta.sheets||[]).map(s=>s.properties.title);
       const missing=[CONFIG.ROUTINE_SHEET_NAME,CONFIG.ALERTS_SHEET_NAME].filter(n=>!titles.includes(n));
       if(missing.length)await createSheets(missing);
-      const [inventoryRows,transactionRows,clientRows,routineRows,alertRows]=await Promise.all([
-        getValues(id,CONFIG.INVENTORY_SHEET_NAME),getValues(id,CONFIG.TRANSACTIONS_SHEET_NAME),getValues(id,CONFIG.CLIENT_LIST_SHEET_NAME),getValues(id,CONFIG.ROUTINE_SHEET_NAME),getValues(id,CONFIG.ALERTS_SHEET_NAME)
+      const [inventoryRows,transactionRows,clientRows,routineRows,alertRows,operationRows,adjustmentRows]=await Promise.all([
+        getValues(id,CONFIG.INVENTORY_SHEET_NAME),
+        getValues(id,CONFIG.TRANSACTIONS_SHEET_NAME),
+        getValues(id,CONFIG.CLIENT_LIST_SHEET_NAME),
+        getValues(id,CONFIG.ROUTINE_SHEET_NAME),
+        getValues(id,CONFIG.ALERTS_SHEET_NAME),
+        titles.includes(CONFIG.ASSET_OPERATIONS_SHEET_NAME)?getValues(id,CONFIG.ASSET_OPERATIONS_SHEET_NAME):Promise.resolve([]),
+        titles.includes(CONFIG.CLIENT_LEDGER_ADJUSTMENTS_SHEET_NAME)?getValues(id,CONFIG.CLIENT_LEDGER_ADJUSTMENTS_SHEET_NAME):Promise.resolve([])
       ]);
       await ensureAlertHeaders(id, alertRows);
       state.inventory=parseInventory(inventoryRows);
       state.transactions=parseTransactions(transactionRows);
+      state.auditTransactions=[...state.transactions,...parseTransactions(operationRows),...parseTransactions(adjustmentRows)];
       state.clients=parseClients(clientRows);
       state.routines=FM_ROUTINE_ALERTS.parseRoutineRows(routineRows);
       state.alerts=FM_ROUTINE_ALERTS.parseAlertRows(alertRows);
@@ -164,7 +171,8 @@
   }
 
   async function rebuildAlertSnapshot(){
-    const candidates=FM_ROUTINE_ALERTS.buildAlertCandidates({inventory:state.inventory,transactions:state.transactions,routines:state.routines,clients:state.clients,date:new Date()});
+    const alertLedgerTransactions=[...state.transactions,...state.auditTransactions.filter(item=>String(item.movement||"").trim().toUpperCase()==="NORMALISATION")];
+    const candidates=FM_ROUTINE_ALERTS.buildAlertCandidates({inventory:state.inventory,transactions:alertLedgerTransactions,routines:state.routines,clients:state.clients,date:new Date()});
     const retainedMap=new Map();
     state.alerts.filter(a=>a.status==="ATTENDED"||a.status==="IGNORED").forEach(a=>{if(a.key)retainedMap.set(a.key,{...a,rawRow:Array.isArray(a.rawRow)?a.rawRow.slice():undefined});});
     const retained=[...retainedMap.values()];
@@ -231,15 +239,24 @@
     renderInvestigation();
   }
   function populateInvestigationFilters(alert){
-    const clients=[...new Set(state.transactions.map(t=>t.client).filter(Boolean))].sort((a,b)=>a.localeCompare(b));const assets=[...new Set(state.transactions.map(t=>t.asset).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+    const auditRows=state.auditTransactions.length?state.auditTransactions:state.transactions;
+    const clients=[...new Set(auditRows.map(t=>t.client).filter(Boolean))].sort((a,b)=>a.localeCompare(b));const assets=[...new Set(auditRows.map(t=>t.asset).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
     const client=$('investigate-client'),asset=$('investigate-asset'); const currentClient=client.value,currentAsset=asset.value;
     client.innerHTML=`<option value="">All clients</option>${clients.map(v=>`<option value="${escapeAttr(v)}">${escapeHtml(v)}</option>`).join("")}`;
     asset.innerHTML=`<option value="">All assets</option>${assets.map(v=>`<option value="${escapeAttr(v)}">${escapeHtml(v)}</option>`).join("")}`;
     if(clients.includes(currentClient))client.value=currentClient;if(assets.includes(currentAsset))asset.value=currentAsset;
   }
+  function investigationMovementClass(value){
+    const movement=String(value||"").trim().toUpperCase();
+    if(movement==="RECEIVED"||movement==="COMBINE_IN")return "received";
+    if(movement==="SENT")return "sent";
+    if(movement==="DISCARD"||movement==="COMBINE_OUT")return "discard";
+    return "other";
+  }
   function renderInvestigation(){
     const client=$("investigate-client")?.value||"", asset=$("investigate-asset")?.value||"", date=$("investigate-date")?.value||"", movement=$("investigate-movement")?.value||"";
-    const rows=state.transactions.filter(t=>(!client||sameText(t.client,client))&&(!asset||sameText(t.asset,asset))&&(!date||dateKey(t.timestamp)===date)&&(!movement||String(t.movement||"").toUpperCase()===movement));
+    const auditRows=state.auditTransactions.length?state.auditTransactions:state.transactions;
+    const rows=auditRows.filter(t=>(!client||sameText(t.client,client))&&(!asset||sameText(t.asset,asset))&&(!date||dateKey(t.timestamp)===date)&&(!movement||String(t.movement||"").toUpperCase()===movement));
     const groups=FM_TRANSACTION_DISPLAY.groupTransactions(rows);
     state.investigationRows=groups;
     $('investigate-count').textContent=`${groups.length.toLocaleString()} grouped movement${groups.length===1?"":"s"}`;
@@ -252,7 +269,7 @@
           <div class="transaction-card-heading"><div class="transaction-card-client">${escapeHtml(group.client||"Unknown client")}</div><div class="transaction-card-meta"><span>${escapeHtml(formatAlertTime(group.timestamp))}</span><span>•</span><span>${escapeHtml(FM_TRANSACTION_DISPLAY.movementLabels(group).join(" + "))}</span>${group.vehicleReg?`<span class="transaction-vehicle-reg"><span>Vehicle reg</span><strong>${escapeHtml(group.vehicleReg)}</strong></span>`:""}</div></div>
           <button type="button" class="secondary info-button transaction-card-view" data-investigate-info-index="${index}">View details</button>
         </div>
-        <div class="transaction-card-body">${sections.map(section=>`<section class="transaction-movement-section movement-${String(section.movement ?? section.key ?? "other").toLowerCase()}"><div class="transaction-movement-heading"><span class="movement-tag ${String(section.movement ?? section.key ?? "other").toLowerCase()}">${escapeHtml(section.label)}</span><span>${FM_ROUTINE_ALERTS.formatQty(section.totalQuantity)} total</span></div><div class="transaction-asset-list">${section.items.map(item=>`<div class="transaction-asset-pill"><span>${escapeHtml(item.asset)}</span><strong>${FM_ROUTINE_ALERTS.formatQty(item.quantity)}</strong></div>`).join("")}</div></section>`).join("")}</div>
+        <div class="transaction-card-body">${sections.map(section=>{const cls=investigationMovementClass(section.movement ?? section.key);return `<section class="transaction-movement-section movement-${cls}"><div class="transaction-movement-heading"><span class="movement-tag ${cls}">${escapeHtml(section.label)}</span><span>${FM_ROUTINE_ALERTS.formatQty(section.totalQuantity)} total</span></div><div class="transaction-asset-list">${section.items.map(item=>`<div class="transaction-asset-pill"><span>${escapeHtml(item.asset)}</span><strong>${FM_ROUTINE_ALERTS.formatQty(item.quantity)}</strong></div>`).join("")}</section>`;}).join("")}</div>
         <div class="transaction-card-footer"><span>${FM_TRANSACTION_DISPLAY.formatLineCount(group)}${group.image?" · attachment":""}</span><strong>${FM_ROUTINE_ALERTS.formatQty(group.totalQuantity)} total units</strong></div>
       </article>`;
     }).join(""):`<div class="transaction-empty">No matching asset movements.</div>`;

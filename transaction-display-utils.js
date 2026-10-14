@@ -1,24 +1,33 @@
 (() => {
   "use strict";
 
-  const ORDER = ["RECEIVED", "SENT", "DISCARD"];
+  const ORDER = ["RECEIVED", "SENT", "DISCARD", "COMBINE_OUT", "COMBINE_IN", "NORMALISATION"];
 
   function canonicalMovement(value) {
     const movement = String(value || "").trim().toUpperCase();
     if (["RECEIVED","INBOUND","IN","RECEIVE"].includes(movement)) return "RECEIVED";
     if (["SENT","OUTBOUND","OUT","SEND"].includes(movement)) return "SENT";
     if (["DISCARDED","DISCARD"].includes(movement)) return "DISCARD";
+    if (["COMBINE_OUT", "COMBINATION OUT", "COMPONENT USED"].includes(movement)) return "COMBINE_OUT";
+    if (["COMBINE_IN", "COMBINATION IN", "ASSET CREATED"].includes(movement)) return "COMBINE_IN";
+    if (["NORMALISATION", "NORMALIZATION", "LEDGER ADJUSTMENT"].includes(movement)) return "NORMALISATION";
     return movement || "OTHER";
   }
 
   function movementLabel(value) {
     const movement = canonicalMovement(value);
-    return movement === "RECEIVED" ? "Received" : movement === "SENT" ? "Sent" : movement === "DISCARD" ? "Discarded" : String(value || "Other");
+    if (movement === "RECEIVED") return "Received";
+    if (movement === "SENT") return "Sent";
+    if (movement === "DISCARD") return "Discarded";
+    if (movement === "COMBINE_OUT") return "Combination component used";
+    if (movement === "COMBINE_IN") return "Combined asset created";
+    if (movement === "NORMALISATION") return "Client ledger normalisation";
+    return String(value || "Other");
   }
 
   function movementClass(value) {
     const movement = canonicalMovement(value);
-    return movement === "RECEIVED" ? "movement-received" : movement === "SENT" ? "movement-sent" : movement === "DISCARD" ? "movement-discard" : "movement-other";
+    return movement === "RECEIVED" ? "movement-received" : movement === "SENT" ? "movement-sent" : movement === "DISCARD" ? "movement-discard" : movement === "COMBINE_IN" ? "movement-received" : movement === "COMBINE_OUT" ? "movement-discard" : movement === "NORMALISATION" ? "movement-other" : "movement-other";
   }
 
   function timestampMs(value) {

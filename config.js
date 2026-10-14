@@ -33,6 +33,12 @@ const CONFIG = {
     TRANSACTIONS_SHEET_NAME:
         "Asset Transactions",
 
+    // Optional extension sheets. Older dashboard versions can safely ignore these.
+    ASSET_AVAILABILITY_SHEET_NAME: "Asset Availability",
+    ASSET_OPERATIONS_SHEET_NAME: "Asset Operations",
+    CLIENT_LEDGER_ADJUSTMENTS_SHEET_NAME: "Client Ledger Adjustments",
+    ASSET_COMBINATION_RULES_SHEET_NAME: "Asset Combination Rules",
+
     CLIENT_LIST_SHEET_NAME:
         "Client List",
 

@@ -254,10 +254,12 @@
       if(!titles.includes(CONFIG.ALERTS_SHEET_NAME))missing.push(CONFIG.ALERTS_SHEET_NAME);
       if(missing.length)await createSheets(missing);
 
-      const [inventoryRows,transactionRows,clientRows]=await Promise.all([
+      const [inventoryRows,transactionRows,clientRows,operationRows,adjustmentRows]=await Promise.all([
         getValues(ledgerId,CONFIG.INVENTORY_SHEET_NAME),
         getValues(ledgerId,CONFIG.TRANSACTIONS_SHEET_NAME),
-        getValues(ledgerId,CONFIG.CLIENT_LIST_SHEET_NAME)
+        getValues(ledgerId,CONFIG.CLIENT_LIST_SHEET_NAME),
+        titles.includes(CONFIG.ASSET_OPERATIONS_SHEET_NAME)?getValues(ledgerId,CONFIG.ASSET_OPERATIONS_SHEET_NAME):Promise.resolve([]),
+        titles.includes(CONFIG.CLIENT_LEDGER_ADJUSTMENTS_SHEET_NAME)?getValues(ledgerId,CONFIG.CLIENT_LEDGER_ADJUSTMENTS_SHEET_NAME):Promise.resolve([])
       ]);
 
       const columns=await ensureTransactionColumns(ledgerId,transactionRows);
@@ -273,7 +275,11 @@
           console.warn("Legacy inventory log could not be removed yet:",legacyError);
         }
       }
-      state.transactions=parseTransactions(transactionRows,columns.idx);
+      state.transactions=[
+        ...parseTransactions(transactionRows,columns.idx),
+        ...parseTransactions(operationRows,columns.idx),
+        ...parseTransactions(adjustmentRows,columns.idx)
+      ];
       state.clients=parseClients(clientRows);
 
       batchForm?.refresh?.();
@@ -371,7 +377,8 @@
   function renderTransactionCard(group,index){
     const sections=FM_TRANSACTION_DISPLAY.movementSections(group);
     const sectionMarkup=sections.map(section=>{
-      const cls=lowerText(section.movement);
+      const movement=String(section.movement||"").trim().toUpperCase();
+      const cls=movement==="RECEIVED"||movement==="COMBINE_IN"?"received":movement==="SENT"?"sent":movement==="DISCARD"||movement==="COMBINE_OUT"?"discard":"other";
       return `<section class="transaction-movement-section movement-${cls}">
         <div class="transaction-movement-heading"><span class="movement-tag ${cls}">${escapeHtml(section.label)}</span><span>${formatNumber(section.totalQuantity)} total</span></div>
         <div class="transaction-asset-list">${section.items.map(item=>`<div class="transaction-asset-pill"><span>${escapeHtml(item.asset)}</span><strong>${formatNumber(item.quantity)}</strong></div>`).join("")}</div>
@@ -641,7 +648,7 @@
     return `${selected.getFullYear()}-${pad(selected.getMonth()+1)}-${pad(selected.getDate())}T${pad(hours)}:${pad(minutes)}:00${sign}${offsetHours}:${offsetMinutes}`;
   }
   function setDefaultTimestamp(){const input=$("timestamp");if(!input)return;const now=new Date();input.value=`${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;}
-  function movementLabel(x){return x==="RECEIVED"?"Received":x==="SENT"?"Sent":x==="DISCARD"?"Discard":String(x||"");}function movementClass(x){return lowerText(x);}function formatTimestamp(x){if(!x)return"";const d=new Date(x);return Number.isNaN(d.getTime())?String(x):d.toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});}function formatNumber(x){return Number(x||0).toLocaleString("en-GB");}function numericValue(x){if(x===null||x===undefined||x==="")return 0;const n=Number(String(x).replace(/,/g,""));return Number.isFinite(n)?n:0;}function normalizeHeader(x){return String(x??"").trim().toLowerCase().replace(/\s+/g," ");}function findColumn(headers,names){for(const name of names){const idx=headers.indexOf(name);if(idx>=0)return idx;}return-1;}function quoteSheetName(x){return `'${String(x).replace(/'/g,"''")}'`;}function columnLetter(n){let r="";while(n>0){const rem=(n-1)%26;r=String.fromCharCode(65+rem)+r;n=Math.floor((n-1)/26);}return r;}function escapeDriveQuery(x){return String(x).replace(/\\/g,"\\\\").replace(/'/g,"\\'");}function escapeHtml(x){return String(x??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));}function escapeAttr(x){return escapeHtml(x);}function emptyRow(colspan,text){return `<tr><td colspan="${colspan}" class="empty">${escapeHtml(text)}</td></tr>`;}
+  function movementLabel(x){return x==="RECEIVED"?"Received":x==="SENT"?"Sent":x==="DISCARD"?"Discard":x==="COMBINE_OUT"?"Combination component used":x==="COMBINE_IN"?"Combined asset created":x==="NORMALISATION"?"Client ledger normalisation":String(x||"");}function movementClass(x){const m=String(x||"").trim().toUpperCase();return m==="RECEIVED"||m==="COMBINE_IN"?"received":m==="SENT"?"sent":m==="DISCARD"||m==="COMBINE_OUT"?"discard":"other";}function formatTimestamp(x){if(!x)return"";const d=new Date(x);return Number.isNaN(d.getTime())?String(x):d.toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});}function formatNumber(x){return Number(x||0).toLocaleString("en-GB");}function numericValue(x){if(x===null||x===undefined||x==="")return 0;const n=Number(String(x).replace(/,/g,""));return Number.isFinite(n)?n:0;}function normalizeHeader(x){return String(x??"").trim().toLowerCase().replace(/\s+/g," ");}function findColumn(headers,names){for(const name of names){const idx=headers.indexOf(name);if(idx>=0)return idx;}return-1;}function quoteSheetName(x){return `'${String(x).replace(/'/g,"''")}'`;}function columnLetter(n){let r="";while(n>0){const rem=(n-1)%26;r=String.fromCharCode(65+rem)+r;n=Math.floor((n-1)/26);}return r;}function escapeDriveQuery(x){return String(x).replace(/\\/g,"\\\\").replace(/'/g,"\\'");}function escapeHtml(x){return String(x??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));}function escapeAttr(x){return escapeHtml(x);}function emptyRow(colspan,text){return `<tr><td colspan="${colspan}" class="empty">${escapeHtml(text)}</td></tr>`;}
   function authHeaders(){return{Authorization:`Bearer ${state.accessToken}`};}
   async function sheetsGet(path){return fetchJson(SHEETS_API+path,{headers:authHeaders()});}async function sheetsPost(path,body){return fetchJson(SHEETS_API+path,{method:"POST",headers:{...authHeaders(),"Content-Type":"application/json"},body:JSON.stringify(body)});}async function sheetsPut(path,body){return fetchJson(SHEETS_API+path,{method:"PUT",headers:{...authHeaders(),"Content-Type":"application/json"},body:JSON.stringify(body)});}
   function isTransientApiStatus(status){return [408,429,500,502,503,504].includes(Number(status));}
